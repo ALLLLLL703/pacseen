@@ -1,7 +1,15 @@
-use alpm::Alpm;
-use std::{collections::HashSet, error::Error};
+use alpm::{Alpm, SigLevel};
+use crossterm::event::{self, KeyCode, KeyEvent, KeyEventKind};
+use std::{
+    collections::HashSet,
+    error::Error,
+    process::{Command, ExitStatus},
+};
 
-use crate::objects::stat::{ItemRepo, Package};
+use crate::{
+    objects::stat::{App, ItemRepo, Package},
+    run,
+};
 
 pub fn load_repo_packages() -> Result<Vec<Package>, Box<dyn Error>> {
     let alpm = Alpm::new("/", "/var/lib/pacman")?;
@@ -13,6 +21,15 @@ pub fn load_repo_packages() -> Result<Vec<Package>, Box<dyn Error>> {
         .iter()
         .map(|p| p.name().to_string())
         .collect();
+    alpm.register_syncdb("core", SigLevel::USE_DEFAULT).unwrap();
+    alpm.register_syncdb("extra", SigLevel::USE_DEFAULT)
+        .unwrap();
+    alpm.register_syncdb("multilib", SigLevel::USE_DEFAULT)
+        .unwrap();
+    alpm.register_syncdb("archlinuxcn", SigLevel::USE_DEFAULT)
+        .unwrap();
+    alpm.register_syncdb("arch4edu", SigLevel::USE_DEFAULT)
+        .unwrap();
 
     for repo in alpm.syncdbs() {
         let repo_name = repo.name();
@@ -33,4 +50,34 @@ pub fn load_repo_packages() -> Result<Vec<Package>, Box<dyn Error>> {
     packages.dedup_by(|a, b| a.name == b.name);
 
     Ok(packages)
+}
+
+impl App {
+    pub fn install_pack(&mut self, index: usize) {
+        let pack = &mut self.items[index];
+        let cmd = format!("paru");
+        if pack.is_installed == true {
+            ratatui::restore();
+            let mut child = Command::new(&cmd)
+                .arg("-Rns")
+                .arg(&pack.name)
+                .spawn()
+                .expect("failed to start a new process");
+            let status = child.wait().unwrap();
+            if status.success() {
+                pack.is_installed == false;
+            }
+            return;
+        }
+        ratatui::restore();
+        let mut child = Command::new(&cmd)
+            .arg("-S")
+            .arg(&pack.name)
+            .spawn()
+            .expect("failed to start a new process");
+        let status = child.wait().unwrap();
+        if status.success() {
+            pack.is_installed = true;
+        }
+    }
 }
