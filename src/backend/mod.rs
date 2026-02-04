@@ -1,15 +1,8 @@
 use alpm::{Alpm, SigLevel};
-use crossterm::event::{self, KeyCode, KeyEvent, KeyEventKind};
-use std::{
-    collections::HashSet,
-    error::Error,
-    process::{Command, ExitStatus},
-};
+use std::{collections::HashSet, error::Error, io, process::Command};
 
-use crate::{
-    objects::stat::{App, ItemRepo, Package},
-    run,
-};
+use crate::objects::stat::{App, ItemRepo, Package};
+pub mod aur;
 
 pub fn load_repo_packages() -> Result<Vec<Package>, Box<dyn Error>> {
     let alpm = Alpm::new("/", "/var/lib/pacman")?;
@@ -40,6 +33,7 @@ pub fn load_repo_packages() -> Result<Vec<Package>, Box<dyn Error>> {
                 pkg.size() as u64 / 1024,
                 pkg.desc().unwrap_or("None").to_string(),
                 pkg.name().to_string(),
+                pkg.version().to_string(),
             );
 
             packages.push(pack);
@@ -55,8 +49,8 @@ pub fn load_repo_packages() -> Result<Vec<Package>, Box<dyn Error>> {
 impl App {
     pub fn install_pack(&mut self, index: usize) {
         let pack = &mut self.filtered[index];
-        let cmd = format!("paru");
-        if pack.is_installed == true {
+        let cmd = "paru".to_string();
+        if pack.is_installed {
             ratatui::restore();
             let mut child = Command::new(&cmd)
                 .arg("-Rns")
@@ -67,6 +61,7 @@ impl App {
             if status.success() {
                 pack.is_installed == false;
             }
+
             return;
         }
         ratatui::restore();
@@ -75,7 +70,7 @@ impl App {
             .arg(&pack.name)
             .spawn()
             .expect("failed to start a new process");
-        let status = child.wait().unwrap();
+        let status = child.wait().unwrap_or_default();
         if status.success() {
             pack.is_installed = true;
         }

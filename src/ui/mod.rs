@@ -1,6 +1,8 @@
+use std::io;
+
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
 use ratatui::{
-    Frame,
+    DefaultTerminal, Frame,
     buffer::Buffer,
     layout::{Constraint, Direction, Layout, Rect},
     prelude::Widget,
@@ -12,22 +14,29 @@ use ratatui::{
         StatefulWidget, Wrap,
     },
 };
+use tokio::time::Duration;
+use tokio::time::sleep;
 
 use crate::objects::stat::{App, ItemRepo};
 
 const SELECTED_STYLE: Style = Style::new().bg(SLATE.c800).add_modifier(Modifier::BOLD);
 const TEXT_FG_COLOR: Color = SLATE.c200;
 
-pub fn render(frame: &mut Frame, app: &mut App) {
+pub fn render<'a>(frame: &mut Frame<'a>, app: &mut App) {
     let main_chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(35), Constraint::Percentage(65)])
-        .split(frame.size());
+        .split(frame.area());
 
     let left_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(3), Constraint::Min(0)])
         .split(main_chunks[0]);
+
+    let right_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(3), Constraint::Length(3)])
+        .split(main_chunks[1]);
 
     let search = Paragraph::new(app.search.as_str())
         .block(
@@ -54,10 +63,10 @@ pub fn render(frame: &mut Frame, app: &mut App) {
                 match &p.repo {
                     ItemRepo::Core => "core",
                     ItemRepo::Extra => "extra",
-                    ItemRepo::multilib => "multilib",
-                    ItemRepo::archlinuxcn => "archlinuxcn",
-                    ItemRepo::absOther(string) => string,
-                    ItemRepo::AUR => "aur",
+                    ItemRepo::Multilib => "multilib",
+                    ItemRepo::Archlinuxcn => "archlinuxcn",
+                    ItemRepo::AbsOther(string) => string,
+                    ItemRepo::AUR(_) => "aur",
                 }
             ))
         })
@@ -71,9 +80,17 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         )
         .highlight_style(SELECTED_STYLE)
         .highlight_symbol(">")
-        .highlight_spacing(HighlightSpacing::Always);
+        .highlight_spacing(HighlightSpacing::Always)
+        .style(Style::new());
 
     let info = Paragraph::new("package info").block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .light_blue(),
+    );
+
+    let notice = Paragraph::new(app.notice.clone()).block(
         Block::default()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
@@ -87,8 +104,18 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         frame.buffer_mut(),
         &mut app.list_state,
     );
-    frame.render_widget(info, main_chunks[1]);
-    app.render_selected_item(main_chunks[1], frame.buffer_mut());
+    frame.render_widget(info, right_chunks[0]);
+    app.render_selected_item(right_chunks[0], frame.buffer_mut());
+    frame.render_widget(notice, right_chunks[1]);
+    if app.insert_mode.enabled {
+        let original_x = left_chunks[0].x;
+        let original_y = left_chunks[0].y;
+
+        frame.set_cursor_position((
+            original_x + app.insert_mode.index as u16 + 1,
+            original_y + 1,
+        ));
+    }
 }
 
 impl App {
@@ -97,17 +124,25 @@ impl App {
             return;
         }
 
-        if self.insert_mode.enabled == false {
+        if !self.insert_mode.enabled {
             match key.code {
                 KeyCode::Esc | KeyCode::Char('q') => self.exit = true,
                 KeyCode::Char('h') | KeyCode::Left => self.select_none(),
-                KeyCode::Char('l') | KeyCode::Enter => match self.list_state.selected() {
-                    Some(i) => {
+                KeyCode::Char('l') | KeyCode::Enter => {
+                    if let Some(i) = self.list_state.selected() {
                         self.install_pack(i);
-                        crate::run(ratatui::init(), self);
+                        println!("will went back to pacseen after type <enter>");
+                        io::stdin()
+                            .read_line(&mut String::new())
+                            .unwrap_or_default();
+
+                        let mut terminal: DefaultTerminal = ratatui::init();
+                        terminal.clear().unwrap_or_default();
+                        terminal.draw(|frame| {
+                            render(frame, self);
+                        });
                     }
-                    None => {}
-                },
+                }
                 KeyCode::Char('k') | KeyCode::Up => self.select_previous(),
                 KeyCode::Char('j') | KeyCode::Down => self.select_next(),
                 KeyCode::Char('g') | KeyCode::Home => self.select_first(),
@@ -120,9 +155,13 @@ impl App {
                 KeyCode::Backspace => self.delete_char(),
                 KeyCode::Enter | KeyCode::Tab => self.insert_mode.enabled = false,
                 KeyCode::Char(c) => self.enter_char(c),
+                KeyCode::Left => self.move_cursor_left(),
+                KeyCode::Right => self.move_cursor_right(),
+
                 _ => {}
             }
-            self.update_filter();
+
+            self.update_filter_local();
         }
     }
 
@@ -146,28 +185,28 @@ impl App {
         self.list_state.select_last();
     }
 
-    fn toggle_info(&mut self) {
-        if let Some(i) = self.list_state.selected() {
-            self.selected_pack = i
-        }
-    }
-
     pub fn render_selected_item(&self, area: Rect, buf: &mut Buffer) {
         let info = if let Some(i) = self.list_state.selected() {
             let pak = self.filtered[i].clone();
-            let repo_name = match pak.repo {
+            let repo_name = match &pak.repo {
                 ItemRepo::Core => "core",
                 ItemRepo::Extra => "Extra",
-                ItemRepo::archlinuxcn => "archlinuxcn",
-                ItemRepo::multilib => "multilib",
-                ItemRepo::AUR => "aur",
-                ItemRepo::absOther(string) => &string.clone()[..],
-                _ => "",
+                ItemRepo::Archlinuxcn => "archlinuxcn",
+                ItemRepo::Multilib => "multilib",
+                ItemRepo::AUR(_) => "aur",
+                ItemRepo::AbsOther(string) => &string.clone()[..],
             };
-            format!(
-                "name:\t{}\nrepo:\t{}\ninstalled:\t{}\ndesc:\t{}\n",
-                pak.name, repo_name, pak.is_installed, pak.descipt
-            )
+            match pak.repo {
+                ItemRepo::AUR(votes) => format!(
+                    "name:\t{}\nrepo:\t{}\ninstalled:\t{}\ndesc:\t{}\nvote:\t{}\n",
+                    pak.name, repo_name, pak.is_installed, pak.descipt, votes,
+                ),
+
+                _ => format!(
+                    "name:\t{}\nrepo:\t{}\ninstalled:\t{}\ndesc:\t{}\n",
+                    pak.name, repo_name, pak.is_installed, pak.descipt
+                ),
+            }
         } else {
             "Nothing selected".to_string()
         };

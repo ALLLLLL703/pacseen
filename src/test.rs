@@ -1,13 +1,32 @@
-use std::{error::Error, io};
+use std::{error::Error, time::Duration};
 
-use crate::backend::load_repo_packages;
-use crate::objects::stat::Package;
+use tokio::{sync::mpsc, time::sleep};
 
-#[test]
-fn main1() -> Result<(), Box<dyn Error>> {
-    let packs = load_repo_packages()?;
-    for pack in packs {
-        println!("{}", pack.name);
+use crate::{backend::aur::get_aur_packages, objects::stat::Package};
+
+#[tokio::test]
+pub async fn test_aur() -> Result<(), Box<dyn Error>> {
+    let (mut tx, mut rx) = mpsc::unbounded_channel::<Vec<Package>>();
+
+    let task = tokio::spawn(async move {
+        let aur_pkgs = get_aur_packages("vim".to_string())
+            .await
+            .unwrap_or_default();
+        let _ = tx.send(aur_pkgs);
+    });
+
+    loop {
+        if let Ok(pkgs) = rx.try_recv() {
+            for p in pkgs {
+                println!("{}: {}", p.name, p.descipt);
+            }
+            break;
+        }
+        println!("ui tick");
+        sleep(Duration::from_millis(50)).await;
     }
+
     Ok(())
 }
+
+pub fn poll_aur() {}
